@@ -1,19 +1,28 @@
 package com.example.qd.mysocketdemo;
 
+import android.app.Activity;
+import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
 import android.os.Handler;
-import android.support.v7.app.AppCompatActivity;
+import android.support.v4.app.Fragment;
 import android.support.v7.widget.LinearLayoutManager;
 import android.support.v7.widget.RecyclerView;
 import android.text.Editable;
 import android.text.TextUtils;
 import android.text.TextWatcher;
 import android.util.Log;
+import android.view.KeyEvent;
+import android.view.LayoutInflater;
+import android.view.Menu;
+import android.view.MenuInflater;
+import android.view.MenuItem;
 import android.view.View;
-import android.widget.Button;
+import android.view.ViewGroup;
+import android.view.inputmethod.EditorInfo;
 import android.widget.EditText;
 import android.widget.ImageButton;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import org.json.JSONException;
@@ -22,52 +31,54 @@ import org.json.JSONObject;
 import java.util.ArrayList;
 import java.util.List;
 
-import butterknife.BindView;
-import butterknife.ButterKnife;
 import io.socket.client.Socket;
 import io.socket.emitter.Emitter;
 
 
-public class MainActivity extends AppCompatActivity {
-    @BindView(R.id.recyclerView)
-    RecyclerView recyclerView;//消息列表
-    @BindView(R.id.ib_send)
-    ImageButton ib_send;//发消息
-    @BindView(R.id.et_context)
-    EditText et_context;//内容输入款
-    @BindView(R.id.btn_back)
-    Button btn_back;//退出登陆
-    private Socket mSocket;
-    private RecyclerView.Adapter mAdapter;
-    private Handler mTypingHandler = new Handler();
-    private List<Message> messageList = new ArrayList<>();//消息列表
-    private static final int TYPING_TIMER_LENGTH = 600;//打字时间长度
-    private String mUsername;//用户名
-    /**
-     * mTyping是否正在输入：true正在输入；false未在输入
-     */
-    private boolean mTyping = false;
+/**
+ * A chat fragment containing messages view and input form.
+ */
+public class MainFragment extends Fragment {
 
-    /**
-     * isConnected是否断开连接：true断开；false未断开
-     */
+    private static final int REQUEST_LOGIN = 0;
+
+    private static final int TYPING_TIMER_LENGTH = 600;
+
+    private RecyclerView mMessagesView;
+    private EditText mInputMessageView;
+    private List<Message> mMessages = new ArrayList<Message>();
+    private RecyclerView.Adapter mAdapter;
+    private boolean mTyping = false;
+    private Handler mTypingHandler = new Handler();
+    private String mUsername;
+    private Socket mSocket;
+
     private Boolean isConnected = true;
 
+    public MainFragment() {
+        super();
+    }
+
+
+    // This event fires 1st, before creation of fragment or any views
+    // The onAttach method is called when the Fragment instance is associated with an Activity.
+    // This does not mean the Activity is fully initialized.
     @Override
-    protected void onCreate(Bundle savedInstanceState) {
+    public void onAttach(Context context) {
+        super.onAttach(context);
+        mAdapter = new MessageAdapter(context, mMessages);
+        if (context instanceof Activity) {
+            //this.listener = (MainActivity) context;
+        }
+    }
+
+
+    @Override
+    public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_main);
-        ButterKnife.bind(this);
 
-        mUsername = getIntent().getStringExtra("username");
-        int numUsers = Integer.valueOf(getIntent().getStringExtra("numUsers"));
-
-        setAdapter();
-
-        addLog(getResources().getString(R.string.message_welcome));
-        addParticipantsLog(numUsers);
-
-        mSocket = MyApplication.getSocket();
+        MyApplication app = (MyApplication) getActivity().getApplication();
+        mSocket = app.getSocket();
         mSocket.on(Socket.EVENT_CONNECT, onConnect);
         mSocket.on(Socket.EVENT_DISCONNECT, onDisconnect);
         mSocket.on(Socket.EVENT_CONNECT_ERROR, onConnectError);
@@ -78,18 +89,53 @@ public class MainActivity extends AppCompatActivity {
         mSocket.on("typing", onTyping);
         mSocket.on("stop typing", onStopTyping);
         mSocket.connect();
-        setListener();
+
+        startSignIn();
     }
 
-    private void setAdapter() {
-        mAdapter = new MessageAdapter(MainActivity.this, messageList);
-        recyclerView.setLayoutManager(new LinearLayoutManager(MainActivity.this));
-        recyclerView.setAdapter(mAdapter);
+    @Override
+    public View onCreateView(LayoutInflater inflater, ViewGroup container,
+                             Bundle savedInstanceState) {
+        return inflater.inflate(R.layout.fragment_main, container, false);
     }
 
-    private void setListener() {
-        //输入框监听
-        et_context.addTextChangedListener(new TextWatcher() {
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+
+        mSocket.disconnect();
+
+        mSocket.off(Socket.EVENT_CONNECT, onConnect);//服务器连接成功
+        mSocket.off(Socket.EVENT_DISCONNECT, onDisconnect);//服务器断开连接
+        mSocket.off(Socket.EVENT_CONNECT_ERROR, onConnectError);//服务器连接错误
+        mSocket.off(Socket.EVENT_CONNECT_TIMEOUT, onConnectError);//服务器连接错误（超时）
+        mSocket.off("new message", onNewMessage);//一条新消息
+        mSocket.off("user joined", onUserJoined);//用户加入
+        mSocket.off("user left", onUserLeft);//有用户退出
+        mSocket.off("typing", onTyping);//正在输入
+        mSocket.off("stop typing", onStopTyping);//没有在输入
+    }
+
+    @Override
+    public void onViewCreated(View view, Bundle savedInstanceState) {
+        super.onViewCreated(view, savedInstanceState);
+
+        mMessagesView = (RecyclerView) view.findViewById(R.id.messages);
+        mMessagesView.setLayoutManager(new LinearLayoutManager(getActivity()));
+        mMessagesView.setAdapter(mAdapter);
+
+        mInputMessageView = (EditText) view.findViewById(R.id.message_input);
+        mInputMessageView.setOnEditorActionListener(new TextView.OnEditorActionListener() {
+            @Override
+            public boolean onEditorAction(TextView v, int id, KeyEvent event) {
+                if (id == R.id.send_button || id == EditorInfo.IME_NULL) {
+                    attemptSend();
+                    return true;
+                }
+                return false;
+            }
+        });
+        mInputMessageView.addTextChangedListener(new TextWatcher() {
             @Override
             public void beforeTextChanged(CharSequence s, int start, int count, int after) {
             }
@@ -112,44 +158,57 @@ public class MainActivity extends AppCompatActivity {
             public void afterTextChanged(Editable s) {
             }
         });
-        //发送
-        ib_send.setOnClickListener(new View.OnClickListener() {
+
+        ImageButton sendButton = (ImageButton) view.findViewById(R.id.send_button);
+        sendButton.setOnClickListener(new View.OnClickListener() {
             @Override
-            public void onClick(View view) {
-                sendMessage();
-            }
-        });
-        //退出登陆
-        btn_back.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View view) {
-                logOut();
+            public void onClick(View v) {
+                attemptSend();
             }
         });
     }
 
-//    @Override
-//    protected void onDestroy() {
-//        super.onDestroy();
-//        mSocket.disconnect();
-//
-//        mSocket.off(Socket.EVENT_CONNECT, onConnect);//服务器连接成功
-//        mSocket.off(Socket.EVENT_DISCONNECT, onDisconnect);//服务器断开连接
-//        mSocket.off(Socket.EVENT_CONNECT_ERROR, onConnectError);//服务器连接错误
-//        mSocket.off(Socket.EVENT_CONNECT_TIMEOUT, onConnectError);//服务器连接错误（超时）
-//        mSocket.off("new message", onNewMessage);//一条新消息
-//        mSocket.off("user joined", onUserJoined);//用户加入
-//        mSocket.off("user left", onUserLeft);//有用户退出
-//        mSocket.off("typing", onTyping);//正在输入
-//        mSocket.off("stop typing", onStopTyping);//没有在输入
-//
-//        mSocket.off("login", onLogin);
-//    }
+    @Override
+    public void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (Activity.RESULT_OK != resultCode) {
+            getActivity().finish();
+            return;
+        }
+
+        mUsername = data.getStringExtra("username");
+        int numUsers = data.getIntExtra("numUsers", 1);
+
+        addLog(getResources().getString(R.string.message_welcome));
+        addParticipantsLog(numUsers);
+    }
+
+    @Override
+    public void onCreateOptionsMenu(Menu menu, MenuInflater inflater) {
+        // Inflate the menu; this adds items to the action bar if it is present.
+        inflater.inflate(R.menu.menu_main, menu);
+    }
+
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        // Handle action bar item clicks here. The action bar will
+        // automatically handle clicks on the Home/Up button, so long
+        // as you specify a parent activity in AndroidManifest.xml.
+        int id = item.getItemId();
+
+        //noinspection SimplifiableIfStatement
+        if (id == R.id.action_leave) {
+            leave();
+            return true;
+        }
+
+        return super.onOptionsItemSelected(item);
+    }
 
     private void addLog(String message) {
-        messageList.add(new Message.Builder(Message.TYPE_LOG)
+        mMessages.add(new Message.Builder(Message.TYPE_LOG)
                 .message(message).build());
-        mAdapter.notifyItemInserted(messageList.size() - 1);
+        mAdapter.notifyItemInserted(mMessages.size() - 1);
         scrollToBottom();
     }
 
@@ -159,70 +218,77 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void addMessage(String username, String message) {
-        messageList.add(new Message.Builder(Message.TYPE_MESSAGE)
+        mMessages.add(new Message.Builder(Message.TYPE_MESSAGE)
                 .username(username).message(message).build());
-        mAdapter.notifyItemInserted(messageList.size() - 1);
+        mAdapter.notifyItemInserted(mMessages.size() - 1);
         scrollToBottom();
     }
 
     private void addTyping(String username) {
-        messageList.add(new Message.Builder(Message.TYPE_ACTION)
+        mMessages.add(new Message.Builder(Message.TYPE_ACTION)
                 .username(username).build());
-        mAdapter.notifyItemInserted(messageList.size() - 1);
+        mAdapter.notifyItemInserted(mMessages.size() - 1);
         scrollToBottom();
     }
 
     private void removeTyping(String username) {
-        for (int i = messageList.size() - 1; i >= 0; i--) {
-            Message message = messageList.get(i);
+        for (int i = mMessages.size() - 1; i >= 0; i--) {
+            Message message = mMessages.get(i);
             if (message.getType() == Message.TYPE_ACTION && message.getUsername().equals(username)) {
-                messageList.remove(i);
+                mMessages.remove(i);
                 mAdapter.notifyItemRemoved(i);
             }
         }
     }
 
-    /**
-     * 发送消息
-     */
-    private void sendMessage() {
+    private void attemptSend() {
         if (null == mUsername) return;
         if (!mSocket.connected()) return;
 
         mTyping = false;
 
-        String message = et_context.getText().toString().trim();
+        String message = mInputMessageView.getText().toString().trim();
         if (TextUtils.isEmpty(message)) {
-            et_context.requestFocus();
+            mInputMessageView.requestFocus();
             return;
         }
 
-        et_context.setText("");
+        mInputMessageView.setText("");
         addMessage(mUsername, message);
 
         // perform the sending message attempt.
         mSocket.emit("new message", message);
     }
 
-    private void scrollToBottom() {
-        recyclerView.scrollToPosition(mAdapter.getItemCount() - 1);
+    private void startSignIn() {
+        mUsername = null;
+        Intent intent = new Intent(getActivity(), LoginActivity.class);
+        startActivityForResult(intent, REQUEST_LOGIN);
     }
 
-    /**
-     * 连接服务器成功
-     */
+    private void leave() {
+        mUsername = null;
+        mSocket.disconnect();
+        mSocket.connect();
+        startSignIn();
+    }
+
+    private void scrollToBottom() {
+        mMessagesView.scrollToPosition(mAdapter.getItemCount() - 1);
+    }
+
     private Emitter.Listener onConnect = new Emitter.Listener() {
         @Override
         public void call(Object... args) {
-            runOnUiThread(new Runnable() {
+            getActivity().runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
-                    Log.e("=====", "重新连接服务器成功");
+                    Log.e("=====", "连接服务器成功" );
                     if (!isConnected) {
                         if (null != mUsername)
                             mSocket.emit("add user", mUsername);
-                        Toast.makeText(getApplicationContext(),
-                                "重新连接服务器成功", Toast.LENGTH_LONG).show();
+                        Toast.makeText(getActivity().getApplicationContext(),
+                                R.string.connect, Toast.LENGTH_LONG).show();
                         isConnected = true;
                     }
                 }
@@ -230,48 +296,39 @@ public class MainActivity extends AppCompatActivity {
         }
     };
 
-    /**
-     * 与服务器断开连接
-     */
     private Emitter.Listener onDisconnect = new Emitter.Listener() {
         @Override
         public void call(Object... args) {
-            runOnUiThread(new Runnable() {
+            getActivity().runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
                     Log.e("=====", "与服务器断开连接");
                     isConnected = false;
-                    Toast.makeText(getApplicationContext(),
-                            "与服务器断开连接", Toast.LENGTH_LONG).show();
+                    Toast.makeText(getActivity().getApplicationContext(),
+                            R.string.disconnect, Toast.LENGTH_LONG).show();
                 }
             });
         }
     };
 
-    /**
-     * 服务器连接错误
-     */
     private Emitter.Listener onConnectError = new Emitter.Listener() {
         @Override
         public void call(Object... args) {
-            runOnUiThread(new Runnable() {
+            getActivity().runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
                     Log.e("=====", "服务器连接错误");
-                    Toast.makeText(getApplicationContext(),
-                            "服务器连接错误", Toast.LENGTH_LONG).show();
+                    Toast.makeText(getActivity().getApplicationContext(),
+                            R.string.error_connect, Toast.LENGTH_LONG).show();
                 }
             });
         }
     };
 
-    /**
-     * 有新消息
-     */
     private Emitter.Listener onNewMessage = new Emitter.Listener() {
         @Override
         public void call(final Object... args) {
-            runOnUiThread(new Runnable() {
+            getActivity().runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
                     Log.e("=====", "有一条新消息");
@@ -293,13 +350,10 @@ public class MainActivity extends AppCompatActivity {
         }
     };
 
-    /**
-     * 有用户加入
-     */
     private Emitter.Listener onUserJoined = new Emitter.Listener() {
         @Override
         public void call(final Object... args) {
-            runOnUiThread(new Runnable() {
+            getActivity().runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
                     Log.e("=====", "有用户加入");
@@ -321,13 +375,10 @@ public class MainActivity extends AppCompatActivity {
         }
     };
 
-    /**
-     * 有用户退出
-     */
     private Emitter.Listener onUserLeft = new Emitter.Listener() {
         @Override
         public void call(final Object... args) {
-            runOnUiThread(new Runnable() {
+            getActivity().runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
                     Log.e("=====", "有用户退出");
@@ -350,13 +401,10 @@ public class MainActivity extends AppCompatActivity {
         }
     };
 
-    /**
-     * 正在输入
-     */
     private Emitter.Listener onTyping = new Emitter.Listener() {
         @Override
         public void call(final Object... args) {
-            runOnUiThread(new Runnable() {
+            getActivity().runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
                     Log.e("=====", "正在输入");
@@ -374,13 +422,10 @@ public class MainActivity extends AppCompatActivity {
         }
     };
 
-    /**
-     * 停止输入
-     */
     private Emitter.Listener onStopTyping = new Emitter.Listener() {
         @Override
         public void call(final Object... args) {
-            runOnUiThread(new Runnable() {
+            getActivity().runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
                     Log.e("=====", "停止输入");
@@ -407,16 +452,5 @@ public class MainActivity extends AppCompatActivity {
             mSocket.emit("stop typing");
         }
     };
-
-    /**
-     * 退出登陆
-     */
-    private void logOut() {
-        mUsername = null;
-        mSocket.disconnect();
-        mSocket.connect();
-        Intent intent = new Intent(MainActivity.this, LoginActivity.class);
-        startActivity(intent);
-        finish();
-    }
 }
+
