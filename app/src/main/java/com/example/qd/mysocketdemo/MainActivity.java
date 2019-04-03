@@ -27,6 +27,10 @@ import butterknife.ButterKnife;
 import io.socket.client.Socket;
 import io.socket.emitter.Emitter;
 
+/**
+ * demo圆形”：https://github.com/nkzawa/socket.io-android-chat
+ * 另一个：https://github.com/vilyever/AndroidSocketClient
+ */
 
 public class MainActivity extends AppCompatActivity {
     @BindView(R.id.recyclerView)
